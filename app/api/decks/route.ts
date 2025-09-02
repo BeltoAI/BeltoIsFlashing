@@ -1,8 +1,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
-import { dbConnect } from "@/src/lib/db";
-import Deck from "@/src/models/Deck";
+import { dbConnect } from "../../../src/lib/db";
+import Deck from "../../../src/models/Deck";
 
 export async function GET() {
   await dbConnect();

@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
-import { dbConnect } from "@/src/lib/db";
+import { dbConnect } from "../../../../src/lib/db";
 import mongoose from "mongoose";
 
 const MAX_SOURCE_CHARS = Number(process.env.MAX_SOURCE_CHARS ?? 8000);
@@ -122,6 +122,10 @@ export async function POST(req: NextRequest) {
     const col = mongoose.connection.db.collection("cards"); // model name 'Card' => collection 'cards'
     const result = await col.insertMany(docs, { ordered: false });
     const insertedIds = (result as any)?.insertedIds ?? {};
+const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
+const insertedIds = (result as any)?.insertedIds ?? {};
+const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
+const insertedIds = (result as any)?.insertedIds ?? {};
 const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
 const saved = insertedCount || 0;
 
