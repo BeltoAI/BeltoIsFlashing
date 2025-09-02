@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Belto Flashcards",
@@ -12,9 +13,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-neutral-50 text-neutral-900 antialiased">
         <header className="border-b bg-white">
           <div className="mx-auto max-w-4xl px-6 py-4 flex items-center justify-between">
-            <a href="/" className="font-semibold tracking-tight">Belto Flashcards</a>
+            <Link href="/" className="font-semibold tracking-tight">Belto Flashcards</Link>
             <nav className="text-sm text-neutral-600">
-              <a className="hover:underline" href="/">Decks</a>
+              <Link className="hover:underline" href="/">Decks</Link>
             </nav>
           </div>
         </header>

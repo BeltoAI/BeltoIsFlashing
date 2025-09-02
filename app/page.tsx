@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
 type Deck = { _id: string; name: string };
 
@@ -52,8 +53,8 @@ export default function Home() {
           <div key={d._id} className="rounded-2xl border bg-white p-4 shadow-sm">
             <div className="font-medium">{d.name}</div>
             <div className="text-sm text-neutral-600 mt-1 flex gap-3">
-              <a href={`/new?deckId=${d._id}`} className="underline">Add cards</a>
-              <a href={`/review?deckId=${d._id}`} className="underline">Review</a>
+              <Link href={`/new?deckId=${d._id}`} className="underline">Add cards</Link>
+              <Link href={`/review?deckId=${d._id}`} className="underline">Review</Link>
             </div>
           </div>
         ))}

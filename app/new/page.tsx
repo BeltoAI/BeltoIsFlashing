@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 type QA = { q: string; a: string };
 
 function useDeckId() {
@@ -36,8 +37,9 @@ export default function NewCards() {
       setPreview(j.cards || []);
       setRaw(j.raw || "");
       setStatus(`Generated ${j.cards?.length ?? 0} cards. Review and click Save.`);
-    } catch (e:any) {
-      setStatus(`Error: ${e?.message ?? "unknown"}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(`Error: ${msg}`);
     } finally {
       setBusy(false);
     }
@@ -55,8 +57,9 @@ export default function NewCards() {
       });
       if (!res.ok) throw new Error("Save failed");
       setStatus(`Saved ${preview.length} cards.`);
-    } catch (e:any) {
-      setStatus(`Error: ${e?.message ?? "unknown"}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(`Error: ${msg}`);
     } finally {
       setBusy(false);
     }
@@ -108,7 +111,7 @@ export default function NewCards() {
         </div>
       )}
 
-      <a href="/" className="text-sm text-neutral-600 underline">← Back to Decks</a>
+      <Link href="/" className="text-sm text-neutral-600 underline">← Back to Decks</Link>
     </div>
   );
 }

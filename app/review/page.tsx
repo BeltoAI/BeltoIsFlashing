@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 type Card = { _id:string; question:string; answer:string; box:number; nextReview:string };
 
@@ -18,7 +19,7 @@ export default function Review() {
   const [showA, setShowA] = useState(false);
   const [status, setStatus] = useState("");
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!deckId) return;
     setStatus("Loading next card…");
     const r = await fetch(`/api/cards/review?deckId=${deckId}`);
@@ -26,9 +27,9 @@ export default function Review() {
     setCard(j);
     setShowA(false);
     setStatus(j ? "" : "No cards due. 🎉");
-  }
+  }, [deckId]);
 
-  useEffect(() => { load(); }, [deckId]);
+  useEffect(() => { void load(); }, [load]);
 
   async function rate(ease: "again"|"good"|"easy") {
     if (!card) return;
@@ -47,7 +48,7 @@ export default function Review() {
       <h1 className="text-2xl font-semibold">Review</h1>
       {status && <div className="text-sm text-neutral-600">{status}</div>}
       {!card ? (
-        <a href="/" className="text-sm underline text-neutral-600">← Back to Decks</a>
+        <Link href="/" className="text-sm underline text-neutral-600">← Back to Decks</Link>
       ) : (
         <div className="space-y-4">
           <div className="text-lg font-medium">Q: {card.question}</div>
@@ -63,7 +64,7 @@ export default function Review() {
           ) : (
             <button onClick={()=>setShowA(true)} className="px-4 py-2 rounded bg-neutral-900 text-white">Show Answer</button>
           )}
-          <div><a href="/" className="text-sm underline text-neutral-600">← Back to Decks</a></div>
+          <div><Link href="/" className="text-sm underline text-neutral-600">← Back to Decks</Link></div>
         </div>
       )}
     </div>
