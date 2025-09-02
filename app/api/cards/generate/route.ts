@@ -6,109 +6,107 @@ import mongoose from "mongoose";
 import { dbConnect } from "../../../../src/lib/db";
 import Card from "../../../../src/models/Card";
 
-type FlashCard = { q: string; a: string };
+type RawCard = { q?: any; a?: any; question?: any; answer?: any; front?: any; back?: any; prompt?: any; };
+type CleanCard = { q: string; a: string };
 
-function normalizeCards(raw: unknown, wanted: number): FlashCard[] {
-  let arr: unknown = raw;
-  if (!Array.isArray(arr)) return [];
-  const out: FlashCard[] = [];
-  for (const item of arr) {
-    if (typeof item === "object" && item !== null) {
-      const q = String((item as any).q ?? "").trim();
-      const a = String((item as any).a ?? "").trim();
-      if (q && a) out.push({ q, a });
-    }
-    if (out.length >= wanted) break;
+function safeParse<T>(s: string): T | null {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function extractArray(text: string): any[] | null {
+  if (!text) return null;
+  const trimmed = text.trim();
+
+  // 1) direct parse
+  let arr = safeParse<any[]>(trimmed);
+  if (Array.isArray(arr)) return arr;
+
+  // 2) bracket slice
+  const first = trimmed.indexOf("[");
+  const last  = trimmed.lastIndexOf("]");
+  if (first >= 0 && last > first) {
+    arr = safeParse<any[]>(trimmed.slice(first, last + 1));
+    if (Array.isArray(arr)) return arr;
   }
-  return out;
+
+  // 3) normalize quotes + trailing commas
+  const norm = trimmed
+    .replace(/[\u201C\u201D\u2018\u2019]/g, '"')
+    .replace(/,\s*([}\]])/g, "$1");
+  arr = safeParse<any[]>(norm);
+  if (Array.isArray(arr)) return arr;
+
+  // 4) maybe { cards: [...] }
+  const obj = safeParse<any>(norm);
+  if (obj && Array.isArray(obj.cards)) return obj.cards;
+
+  return null;
+}
+
+function normalize(items: RawCard[], cap: number): CleanCard[] {
+  const mapped = items.map((it) => {
+    const q = it.q ?? it.question ?? it.prompt ?? it.front ?? "";
+    const a = it.a ?? it.answer ?? it.back ?? "";
+    return { q: String(q || "").trim(), a: String(a || "").trim() };
+  }).filter(c => c.q && c.a);
+  return mapped.slice(0, Math.max(1, cap || mapped.length || 1));
 }
 
 export async function POST(req: NextRequest) {
   try {
-    if (!process.env.BELTO_API_URL) {
-      return NextResponse.json({ error: "NO_LLM_URL" }, { status: 500 });
-    }
     await dbConnect();
-
-    const body = await req.json().catch(() => ({} as any));
+    const body = await req.json().catch(() => ({}));
     const deckId: string | undefined = body.deckId;
-    const source: string = String(body.source ?? "");
-    const countInput = Number(body.count ?? 10);
-    const count = Math.max(1, Math.min(50, isFinite(countInput) ? countInput : 10));
+    const source: string = body.source || "";
+    const count: number = Math.min(20, Math.max(1, Number(body.count || 5)));
 
     if (!deckId) {
       return NextResponse.json({ error: "MISSING_DECK_ID" }, { status: 400 });
     }
     if (!source.trim()) {
-      return NextResponse.json({ error: "EMPTY_SOURCE" }, { status: 400 });
+      return NextResponse.json({ error: "MISSING_SOURCE" }, { status: 400 });
     }
 
-    // Prompt the LLM to return EXACT JSON
-    const sys = 'Output strictly a JSON array of objects like [{"q":"...","a":"..."}]. No prose, no code fences.';
-    const user = `From the text below, generate exactly ${count} high-quality flashcards as a compact JSON array.
-- Each item must have keys "q" and "a".
-- Keep answers concise (<= 120 chars) and factual.
-- DO NOT include extra text.
-
-TEXT:
-${source}`;
-
-    const r = await fetch(process.env.BELTO_API_URL, {
+    // Call your local LLM proxy directly
+    const r = await fetch(process.env.BELTO_API_URL!, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model: process.env.BELTO_API_MODEL || "local",
         messages: [
-          { role: "system", content: sys },
-          { role: "user", content: user }
+          {
+            role: "system",
+            content:
+              `Output strictly a JSON array of ${count} objects like ` +
+              `[{"q":"...","a":"..."}]. No prose, no code fences, no preface, no trailing text.`
+          },
+          { role: "user", content: source }
         ],
-        max_tokens: 1024,
-        temperature: 0.2,
+        max_tokens: 512,
+        temperature: 0.1
       }),
     });
 
-    if (!r.ok) {
-      const t = await r.text().catch(() => "");
-      return NextResponse.json({ error: "LLM_HTTP", status: r.status, detail: t.slice(0, 500) }, { status: 502 });
-    }
+    const j = await r.json().catch(() => ({} as any));
+    const content: string = j?.choices?.[0]?.message?.content || "";
 
-    const j = await r.json().catch(() => ({}));
-    const content: string = j?.choices?.[0]?.message?.content ?? "";
-
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      // try fenced JSON
-      const m = content.match(/```json([\s\S]*?)```/i) || content.match(/```([\s\S]*?)```/i);
-      if (!m) {
-        return NextResponse.json(
-          { error: "AI_BAD_JSON", sample: content.slice(0, 400) },
-          { status: 400 }
-        );
-      }
-      try {
-        parsed = JSON.parse(m[1]);
-      } catch {
-        return NextResponse.json(
-          { error: "AI_BAD_JSON", sample: content.slice(0, 400) },
-          { status: 400 }
-        );
-      }
-    }
-
-    const cards = normalizeCards(parsed, count);
-    if (cards.length === 0) {
+    const raw = extractArray(content);
+    if (!Array.isArray(raw)) {
       return NextResponse.json(
-        { error: "AI_ZERO_CARDS", sample: content.slice(0, 400) },
+        { error: "AI_BAD_JSON", sample: content?.slice(0, 500) },
         { status: 400 }
       );
     }
 
-    // Prepare docs
+    const cards = normalize(raw as RawCard[], count);
+    if (!cards.length) {
+      return NextResponse.json({ error: "AI_ZERO" }, { status: 400 });
+    }
+
+    // Save using native collection for deterministic insertedCount
     const deckObjectId = new mongoose.Types.ObjectId(deckId);
     const now = new Date();
-    const docs = cards.slice(0, count).map((c) => ({
+    const docs = cards.map((c) => ({
       deckId: deckObjectId,
       q: c.q,
       a: c.a,
@@ -117,22 +115,10 @@ ${source}`;
       due: now,
     }));
 
-    // Insert with native driver for deterministic counts
     const col = mongoose.connection.db.collection("cards");
     const result = await col.insertMany(docs, { ordered: false });
-
-    const insertedIds: Record<string, any> = (result as any)?.insertedIds ?? {};
-    const insertedCount: number =
-      typeof (result as any)?.insertedCount === "number"
-        ? (result as any).insertedCount
-        : Object.keys(insertedIds).length;
-
-    if (insertedCount === 0) {
-      return NextResponse.json(
-        { error: "SAVE_ZERO", attempted: docs.length },
-        { status: 500 }
-      );
-    }
+    const insertedIds = (result as any)?.insertedIds ?? {};
+    const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
 
     return NextResponse.json({
       ok: true,
@@ -143,7 +129,7 @@ ${source}`;
     });
   } catch (e: any) {
     return NextResponse.json(
-      { error: "GEN_SAVE_FAILED", detail: e?.message || String(e) },
+      { error: "GEN_FAILED", detail: e?.message || String(e) },
       { status: 500 }
     );
   }
