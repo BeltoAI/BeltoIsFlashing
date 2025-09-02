@@ -1,129 +1,152 @@
 "use client";
-import { useEffect, useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-function useDeckId() {
-  const [deckId, setDeckId] = useState<string | null>(null);
-  useEffect(() => {
-    const u = new URL(window.location.href);
-    setDeckId(u.searchParams.get("deckId"));
-  }, []);
-  return deckId;
-}
+type Grade = "again" | "hard" | "good" | "easy";
 
-type CardT = { _id: string; q: string; a: string; ease: number; interval: number; due: string };
+type CardT = {
+  _id: string;
+  q: string;
+  a: string;
+  ease: number;
+  interval: number;
+  due: string;
+  deckId: string;
+} | null;
 
 export default function ReviewPage() {
-  const deckId = useDeckId();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>("");
-  const [card, setCard] = useState<CardT | null>(null);
+  const [card, setCard] = useState<CardT>(null);
   const [showAnswer, setShowAnswer] = useState(false);
-  const [noneDue, setNoneDue] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dueCount, setDueCount] = useState<number>(0);
+  const [recentIds, setRecentIds] = useState<string[]>([]);
 
-  async function load() {
-    if (!deckId) return;
-    setLoading(true); setError(""); setShowAnswer(false);
+  const deckId = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const u = new URL(window.location.href);
+    return u.searchParams.get("deckId") || "";
+  }, []);
+
+  function pushRecent(id?: string | null) {
+    if (!id) return;
+    setRecentIds((prev) => {
+      const next = [...prev, id];
+      const dedup: string[] = [];
+      for (const x of next) if (!dedup.includes(x)) dedup.push(x);
+      return dedup.slice(-5); // keep last 5 unique
+    });
+  }
+
+  const load = async () => {
     try {
-      const r = await fetch(`/api/cards/review?deckId=${encodeURIComponent(deckId)}`, { cache: "no-store" });
-      if (r.status === 204) { setNoneDue(true); setCard(null); return; }
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setLoading(true);
+      setError(null);
+      if (!deckId) {
+        setError("Missing deckId");
+        setLoading(false);
+        return;
+      }
+
+      // refresh due count
+      try {
+        const c = await fetch(`/api/cards/count?deckId=${deckId}`, { cache: "no-store" });
+        const cj = await c.json();
+        if (c.ok && typeof cj?.dueNow === "number") setDueCount(cj.dueNow);
+      } catch {}
+
+      const skipParam = recentIds.length ? `&skip=${encodeURIComponent(recentIds.join(","))}` : "";
+      const r = await fetch(`/api/cards/review?deckId=${deckId}${skipParam}`, { cache: "no-store" });
       const j = await r.json();
-      setCard(j.card);
-      setNoneDue(!j.card);
-    } catch (e:any) {
-      setError(e?.message || "Failed to load card");
+      if (!r.ok) throw new Error(j?.error || "Failed to load");
+      setCard(j.card || null);
+      setShowAnswer(false);
+      pushRecent(j?.card?._id);
+    } catch (e: any) {
+      setError(e?.message || "Load failed");
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [deckId]);
-
-  async function grade(g: "again" | "hard" | "good" | "easy") {
-    if (!card) return;
+  async function grade(g: Grade) {
     try {
+      if (!card?._id) return;
+      // Ensure we won't immediately see this again
+      pushRecent(card._id);
       const r = await fetch("/api/cards/review", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cardId: card._id, grade: g }),
       });
-      if (!r.ok) throw new Error(`Grade failed (HTTP ${r.status})`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Grade failed");
+      setDueCount((x) => Math.max(0, (x || 1) - 1));
       await load();
-    } catch (e:any) {
+    } catch (e: any) {
       setError(e?.message || "Grade failed");
     }
   }
 
-  if (!deckId) {
-    return (
-      <main className="max-w-2xl mx-auto p-6">
-        <div className="rounded-2xl border bg-white p-6">
-          <h1 className="text-xl font-semibold">Review</h1>
-          <p className="mt-2 text-neutral-700">
-            No <code>deckId</code> provided. Choose a deck first.
-          </p>
-          <Link href="/" className="underline text-sm mt-3 inline-block">← Back to decks</Link>
-        </div>
-      </main>
-    );
-  }
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
 
   return (
     <main className="max-w-2xl mx-auto p-6 space-y-4">
-      <div className="rounded-2xl border bg-white p-6">
+      <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Review</h1>
-
-        {loading && <p className="text-neutral-600 mt-2">Loading…</p>}
-
-        {error && (
-          <div className="mt-3 rounded-lg border bg-red-50 p-3 text-sm text-red-800">
-            {error}
-          </div>
-        )}
-
-        {!loading && noneDue && !error && (
-          <div className="mt-3 rounded-lg border bg-neutral-50 p-3 text-sm">
-            No cards are due right now. Add cards or come back later.
-            <div className="mt-2">
-              <Link href={`/new?deckId=${deckId}`} className="underline">Add cards</Link>
-            </div>
-          </div>
-        )}
-
-        {!loading && card && !error && (
-          <div className="mt-5 space-y-4">
-            <div className="rounded-lg border p-4">
-              <div className="font-medium">Q:</div>
-              <div className="mt-1">{card.q}</div>
-            </div>
-
-            {showAnswer ? (
-              <div className="rounded-lg border p-4 bg-neutral-50">
-                <div className="font-medium">A:</div>
-                <div className="mt-1">{card.a}</div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowAnswer(true)}
-                className="rounded-lg bg-neutral-900 text-white px-4 py-2 hover:bg-black">
-                Show answer
-              </button>
-            )}
-
-            {showAnswer && (
-              <div className="flex gap-2">
-                <button onClick={()=>grade("again")} className="rounded-lg border px-3 py-2">Again</button>
-                <button onClick={()=>grade("hard")}  className="rounded-lg border px-3 py-2">Hard</button>
-                <button onClick={()=>grade("good")}  className="rounded-lg border px-3 py-2 bg-neutral-900 text-white">Good</button>
-                <button onClick={()=>grade("easy")}  className="rounded-lg border px-3 py-2">Easy</button>
-              </div>
-            )}
-          </div>
-        )}
+        <Link href="/" className="text-sm underline">Home</Link>
       </div>
+      <div className="text-sm text-neutral-600">Due now: <span className="font-medium">{dueCount}</span></div>
 
-      <Link href="/" className="text-sm text-neutral-600 underline">← Back to decks</Link>
+      {loading && <div className="text-neutral-500">Loading…</div>}
+      {error && <div className="text-red-600">Error: {error}</div>}
+      {!loading && !error && !card && (
+        <div className="text-neutral-600">No cards due. Nice!</div>
+      )}
+      {!loading && !error && card && (
+        <div className="rounded-2xl border bg-white p-4 shadow-sm space-y-4">
+          <div>
+            <div className="text-sm text-neutral-500 mb-1">Question</div>
+            <div className="text-lg">{card.q}</div>
+          </div>
+
+          <div>
+            <button
+              className="rounded-xl border px-3 py-1 text-sm"
+              onClick={() => setShowAnswer((s) => !s)}
+            >
+              {showAnswer ? "Hide answer" : "Show answer"}
+            </button>
+            {showAnswer && (
+              <div className="mt-3">
+                <div className="text-sm text-neutral-500 mb-1">Answer</div>
+                <div className="text-lg whitespace-pre-wrap">{card.a}</div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2 flex-wrap">
+            <button className="rounded-xl border px-3 py-1" onClick={() => grade("again")}>Again</button>
+            <button className="rounded-xl border px-3 py-1" onClick={() => grade("hard")}>Hard</button>
+            <button className="rounded-xl border px-3 py-1" onClick={() => grade("good")}>Good</button>
+            <button className="rounded-xl border px-3 py-1" onClick={() => grade("easy")}>Easy</button>
+            <button
+              className="rounded-xl border px-3 py-1 ml-auto"
+              onClick={() => {
+                // Skip without grading: just fetch new with current in recentIds
+                pushRecent(card._id);
+                load();
+              }}
+            >
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
