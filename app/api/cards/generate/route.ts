@@ -3,7 +3,6 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { dbConnect } from "../../../../src/lib/db";
-import Card from "../../../../src/models/Card";
 import mongoose from "mongoose";
 
 const MAX_SOURCE_CHARS = Number(process.env.MAX_SOURCE_CHARS ?? 8000);
@@ -55,7 +54,7 @@ export async function POST(req: NextRequest) {
   ].join(" ");
   const user = `From the text below, generate ${count} Q/A flashcards as JSON array with keys "q" and "a". Only output the JSON array.\nTEXT:\n${source}`;
 
-  // Call upstream
+  // Call upstream LLM
   let content = "";
   try {
     const r = await fetch(API_URL, {
@@ -78,7 +77,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "LLM_FETCH_FAILED", detail: e?.message || String(e) }, { status: 502 });
   }
 
-  // Extract JSON
+  // Extract & validate JSON
   const cleaned = sanitizeJsonish(content);
   if (!cleaned) {
     return NextResponse.json(
@@ -105,11 +104,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Persist
+  // Persist using native driver for deterministic insertedCount
   await dbConnect();
-  const now = new Date();
   const deckObjectId = new mongoose.Types.ObjectId(deckId);
-  const docsToInsert = cards.map(c => ({
+  const now = new Date();
+
+  const docs = cards.map(c => ({
     deckId: deckObjectId,
     q: c.q,
     a: c.a,
@@ -119,20 +119,29 @@ export async function POST(req: NextRequest) {
   }));
 
   try {
-    const docs = await Card.insertMany(docsToInsert, { ordered: false });
-    if (!docs || docs.length === 0) {
+    const col = mongoose.connection.db.collection("cards"); // model name 'Card' => collection 'cards'
+    const result = await col.insertMany(docs, { ordered: false });
+    const saved = (result as any)?.insertedCount ?? Object.keys((result as any)?.insertedIds || {}).length || 0;
+
+    if (saved === 0) {
       return NextResponse.json(
-        { error: "SAVE_ZERO", attempted: cards.length, reason: "Mongo returned 0 inserted docs" },
+        { error: "SAVE_ZERO", attempted: docs.length, reason: "insertedCount=0" },
         { status: 500 }
       );
     }
-    return NextResponse.json({ ok: true, deckId, attempted: cards.length, saved: docs.length, cardIds: docs.map(d => String(d._id)) });
+
+    return NextResponse.json({
+      ok: true,
+      deckId,
+      attempted: docs.length,
+      saved,
+      cardIds: Object.values((result as any).insertedIds || {}).map(String),
+    });
   } catch (e: any) {
-    // Surface partial success details if any
     const msg = e?.message || String(e);
-    const wErrors = Array.isArray(e?.writeErrors) ? e.writeErrors.length : undefined;
+    const partial = (e?.result?.result?.nInserted) ?? (e?.result?.insertedCount);
     return NextResponse.json(
-      { error: "SAVE_FAILED", attempted: cards.length, writeErrors: wErrors, detail: msg },
+      { error: "SAVE_FAILED", attempted: docs.length, inserted: partial ?? 0, detail: msg },
       { status: 500 }
     );
   }
