@@ -1,7 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-type QA = { q: string; a: string };
 
 function useDeckId() {
   const [deckId, setDeckId] = useState<string | null>(null);
@@ -12,54 +11,55 @@ function useDeckId() {
   return deckId;
 }
 
+const MAX_CHARS = Number(process.env.NEXT_PUBLIC_MAX_SOURCE_CHARS ?? 8000);
+
 export default function NewCards() {
   const deckId = useDeckId();
   const [source, setSource] = useState("");
   const [count, setCount] = useState(10);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
-  const [preview, setPreview] = useState<QA[]>([]);
-  const [raw, setRaw] = useState("");
+
+  const tooLong = source.length > MAX_CHARS;
+  const nearLimit = !tooLong && source.length > Math.floor(MAX_CHARS * 0.9);
 
   async function generate() {
-    if (!deckId) return alert("Missing deckId");
-    if (!source.trim()) return alert("Paste some source text");
+    if (!deckId) { alert("Missing deckId"); return; }
+    if (!source.trim()) { setStatus("Please paste some text."); return; }
+    if (tooLong) { setStatus(`Text too long: ${source.length} > ${MAX_CHARS} characters. Split it and try again.`); return; }
 
-    setBusy(true); setStatus("Generating…"); setPreview([]); setRaw("");
+    setBusy(true); setStatus("Asking AI to generate cards...");
+    const prompt = `From the text below, generate ${count} flashcards as compact Q/A JSON array with keys "q" and "a". Keep answers concise.\nTEXT:\n${source}`;
     try {
-      const r = await fetch("/api/cards/generate", {
+      const r = await fetch("/api/ai", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source, count })
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] })
       });
+      if (!r.ok) throw new Error(`AI HTTP ${r.status}`);
       const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "generation failed");
-      setPreview(j.cards || []);
-      setRaw(j.raw || "");
-      setStatus(`Generated ${j.cards?.length ?? 0} cards. Review and click Save.`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus(`Error: ${msg}`);
-    } finally {
-      setBusy(false);
-    }
-  }
+      const content = j.content ?? "";
+      let cards: Array<{ q: string; a: string }>;
 
-  async function save() {
-    if (!deckId) return;
-    if (!preview.length) return alert("Nothing to save");
-    setBusy(true); setStatus("Saving to database…");
-    try {
-      const res = await fetch("/api/cards", {
+      try {
+        cards = JSON.parse(content);
+        if (!Array.isArray(cards)) throw new Error("Not array");
+      } catch {
+        const m = content.match(/```json([\s\S]*?)```/i);
+        if (!m) throw new Error("AI did not return JSON");
+        cards = JSON.parse(m[1]);
+      }
+
+      setStatus("Saving cards...");
+      const save = await fetch("/api/cards", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ deckId, cards: preview })
+        body: JSON.stringify({ deckId, cards })
       });
-      if (!res.ok) throw new Error("Save failed");
-      setStatus(`Saved ${preview.length} cards.`);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus(`Error: ${msg}`);
+      if (!save.ok) throw new Error(`Save failed (HTTP ${save.status})`);
+      setStatus(`Saved ${cards.length} cards. You can start reviewing soon.`);
+    } catch (e: any) {
+      setStatus(`Error: ${e?.message ?? "unknown"}`);
     } finally {
       setBusy(false);
     }
@@ -69,47 +69,54 @@ export default function NewCards() {
     <div className="space-y-6">
       <div className="rounded-2xl border bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">Generate Cards</h1>
-        <p className="text-sm text-neutral-600 mt-1">Paste source → Generate → Review → Save.</p>
+        <p className="text-sm text-neutral-600 mt-1">
+          Paste source text (max {MAX_CHARS.toLocaleString()} chars), choose how many cards, then let AI generate concise Q/A pairs.
+        </p>
 
-        <div className="mt-5 space-y-4">
+        <div className="mt-5 space-y-3">
           <textarea
-            className="w-full h-48 border rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-neutral-800"
+            className={`w-full h-56 border rounded-lg p-3 focus:outline-none focus:ring-2 ${tooLong ? "border-red-400 focus:ring-red-500" : "focus:ring-neutral-800"}`}
             placeholder="Paste source text here…"
             value={source}
             onChange={(e) => setSource(e.target.value)}
           />
-          <div className="flex items-center gap-3">
-            <label className="text-sm text-neutral-700">Count</label>
-            <input type="number" min={1} max={50} value={count}
-                   onChange={(e)=>setCount(parseInt(e.target.value || "10"))}
-                   className="border rounded-lg p-2 w-24 focus:outline-none focus:ring-2 focus:ring-neutral-800"/>
-            <button onClick={generate} disabled={busy}
-                    className="rounded-lg bg-neutral-900 text-white px-4 py-2 hover:bg-black disabled:opacity-50">
-              {busy ? "Working…" : "Generate"}
-            </button>
-            <button onClick={save} disabled={busy || preview.length===0}
-                    className="rounded-lg bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700 disabled:opacity-50">
-              Save
-            </button>
+          <div className="flex justify-between items-center text-sm">
+            <div className={`${tooLong ? "text-red-600" : nearLimit ? "text-amber-600" : "text-neutral-600"}`}>
+              {source.length.toLocaleString()} / {MAX_CHARS.toLocaleString()} characters
+              {tooLong ? " — too long" : nearLimit ? " — near limit" : ""}
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-neutral-700">Count</label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={count}
+                onChange={(e)=>setCount(parseInt(e.target.value || "10"))}
+                className="border rounded-lg p-2 w-24 focus:outline-none focus:ring-2 focus:ring-neutral-800"
+              />
+              <button
+                onClick={generate}
+                disabled={busy || !source.trim() || tooLong}
+                className="rounded-lg bg-neutral-900 text-white px-4 py-2 hover:bg-black disabled:opacity-50">
+                {busy ? "Working…" : "Generate & Save"}
+              </button>
+            </div>
           </div>
-          {status && <div className="rounded-lg border bg-neutral-50 p-3 text-sm text-neutral-800">{status}</div>}
-          {raw && <details className="text-xs text-neutral-500"><summary>Raw model output (first 1000 chars)</summary><pre className="whitespace-pre-wrap">{raw.slice(0,1000)}</pre></details>}
+
+          {tooLong && (
+            <div className="rounded-lg border bg-red-50 p-3 text-sm text-red-800">
+              Your text is {source.length.toLocaleString()} chars. The limit is {MAX_CHARS.toLocaleString()}.
+              Split it into smaller chunks and try again.
+            </div>
+          )}
+          {status && !tooLong && (
+            <div className="rounded-lg border bg-neutral-50 p-3 text-sm text-neutral-800">
+              {status}
+            </div>
+          )}
         </div>
       </div>
-
-      {preview.length > 0 && (
-        <div className="rounded-2xl border bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold">Preview ({preview.length})</h2>
-          <div className="mt-3 divide-y">
-            {preview.map((c, i) => (
-              <div key={i} className="py-3">
-                <div className="font-medium">Q{i+1}. {c.q}</div>
-                <div className="text-neutral-700 mt-1">A: {c.a}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <Link href="/" className="text-sm text-neutral-600 underline">← Back to Decks</Link>
     </div>
