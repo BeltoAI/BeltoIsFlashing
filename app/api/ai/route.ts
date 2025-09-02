@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: text || r.statusText }, { status: r.status });
     }
 
-    const data = await r.json();
+    const data: { choices?: { message?: { content?: string } }[] } = await r.json();
     return NextResponse.json({ content: data?.choices?.[0]?.message?.content ?? "" });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

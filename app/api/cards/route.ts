@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "deckId and cards[] required" }, { status: 400 });
   }
   const created = await Card.insertMany(
-    (cards as InputCard[]).map((c) => ({ deckId, question: c.q, answer: c.a }))
+    cards.map((c) => ({ deckId, question: c.q, answer: c.a }))
   );
   return NextResponse.json(created);
 }
