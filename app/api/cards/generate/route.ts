@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import { dbConnect } from "../../../../src/lib/db";
 import Card from "../../../../src/models/Card";
+import mongoose from "mongoose";
 
 const MAX_SOURCE_CHARS = Number(process.env.MAX_SOURCE_CHARS ?? 8000);
 const DEFAULT_MODEL = process.env.BELTO_API_MODEL || "local";
@@ -11,41 +12,23 @@ const API_URL = process.env.BELTO_API_URL;
 
 function sanitizeJsonish(raw: string): string | null {
   if (!raw) return null;
-
-  // 1) prefer ```json ... ``` fence
   const fence = raw.match(/```json([\s\S]*?)```/i) || raw.match(/```([\s\S]*?)```/);
   let s = fence ? fence[1].trim() : raw.trim();
-
-  // 2) normalize smart quotes -> ascii
   s = s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
-
-  // 3) slice to the largest plausible JSON array region
-  const first = s.indexOf("[");
-  const last = s.lastIndexOf("]");
-  if (first !== -1 && last !== -1 && last > first) {
-    s = s.slice(first, last + 1);
-  }
-
-  // 4) remove trailing commas before } or ]
+  const first = s.indexOf("["); const last = s.lastIndexOf("]");
+  if (first !== -1 && last !== -1 && last > first) s = s.slice(first, last + 1);
   s = s.replace(/,\s*([}\]])/g, "$1");
-
-  // 5) if it still looks single-quoted JSON, try converting keys/values
-  const looksSingleQuoted = s.includes("'") && !s.includes('"');
-  if (looksSingleQuoted) {
-    const attempt = s.replace(/'/g, '"');
-    try { JSON.parse(attempt); return attempt; } catch {}
-  }
-
-  // Final attempt
+  const looksSingle = s.includes("'") && !s.includes('"');
+  if (looksSingle) { const t = s.replace(/'/g, '"'); try { JSON.parse(t); return t; } catch {} }
   try { JSON.parse(s); return s; } catch { return null; }
 }
 
-function normalizeCards(arr: any, limit: number) {
+function normalizeCards(arr: unknown, limit: number) {
   if (!Array.isArray(arr)) throw new Error("NOT_ARRAY");
   const out: { q: string; a: string }[] = [];
   for (const it of arr) {
-    const q = typeof it?.q === "string" ? it.q.trim() : null;
-    const a = typeof it?.a === "string" ? it.a.trim() : null;
+    const q = typeof (it as any)?.q === "string" ? (it as any).q.trim() : null;
+    const a = typeof (it as any)?.a === "string" ? (it as any).a.trim() : null;
     if (q && a) out.push({ q, a });
     if (out.length >= limit) break;
   }
@@ -54,15 +37,11 @@ function normalizeCards(arr: any, limit: number) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!API_URL) {
-    return NextResponse.json({ error: "BELTO_API_URL_MISSING" }, { status: 500 });
-  }
+  if (!API_URL) return NextResponse.json({ error: "BELTO_API_URL_MISSING" }, { status: 500 });
 
   const { deckId, source, count: _count } = await req.json();
   if (!deckId) return NextResponse.json({ error: "DECK_ID_REQUIRED" }, { status: 400 });
-  if (!source || typeof source !== "string") {
-    return NextResponse.json({ error: "SOURCE_REQUIRED" }, { status: 400 });
-  }
+  if (!source || typeof source !== "string") return NextResponse.json({ error: "SOURCE_REQUIRED" }, { status: 400 });
   if (source.length > MAX_SOURCE_CHARS) {
     return NextResponse.json({ error: "SOURCE_TOO_LONG", length: source.length, max: MAX_SOURCE_CHARS }, { status: 400 });
   }
@@ -92,17 +71,14 @@ export async function POST(req: NextRequest) {
         temperature: 0.2,
       }),
     });
-
     const j = await r.json().catch(() => ({}));
     content = j?.choices?.[0]?.message?.content ?? "";
-    if (!r.ok) {
-      return NextResponse.json({ error: "LLM_ERROR", status: r.status, body: j }, { status: 502 });
-    }
+    if (!r.ok) return NextResponse.json({ error: "LLM_ERROR", status: r.status, body: j }, { status: 502 });
   } catch (e: any) {
     return NextResponse.json({ error: "LLM_FETCH_FAILED", detail: e?.message || String(e) }, { status: 502 });
   }
 
-  // Extract/parse robustly
+  // Extract JSON
   const cleaned = sanitizeJsonish(content);
   if (!cleaned) {
     return NextResponse.json(
@@ -132,17 +108,32 @@ export async function POST(req: NextRequest) {
   // Persist
   await dbConnect();
   const now = new Date();
-  const docs = await Card.insertMany(
-    cards.map(c => ({
-      deckId,
-      q: c.q,
-      a: c.a,
-      ease: 2.5,
-      interval: 0,
-      due: now,
-    })),
-    { ordered: false }
-  );
+  const deckObjectId = new mongoose.Types.ObjectId(deckId);
+  const docsToInsert = cards.map(c => ({
+    deckId: deckObjectId,
+    q: c.q,
+    a: c.a,
+    ease: 2.5,
+    interval: 0,
+    due: now,
+  }));
 
-  return NextResponse.json({ ok: true, deckId, saved: docs.length, cards: docs.map(d => ({ _id: d._id })) });
+  try {
+    const docs = await Card.insertMany(docsToInsert, { ordered: false });
+    if (!docs || docs.length === 0) {
+      return NextResponse.json(
+        { error: "SAVE_ZERO", attempted: cards.length, reason: "Mongo returned 0 inserted docs" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json({ ok: true, deckId, attempted: cards.length, saved: docs.length, cardIds: docs.map(d => String(d._id)) });
+  } catch (e: any) {
+    // Surface partial success details if any
+    const msg = e?.message || String(e);
+    const wErrors = Array.isArray(e?.writeErrors) ? e.writeErrors.length : undefined;
+    return NextResponse.json(
+      { error: "SAVE_FAILED", attempted: cards.length, writeErrors: wErrors, detail: msg },
+      { status: 500 }
+    );
+  }
 }

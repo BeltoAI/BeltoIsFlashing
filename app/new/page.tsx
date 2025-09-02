@@ -4,10 +4,7 @@ import Link from "next/link";
 
 function useDeckId() {
   const [deckId, setDeckId] = useState<string | null>(null);
-  useEffect(() => {
-    const u = new URL(window.location.href);
-    setDeckId(u.searchParams.get("deckId"));
-  }, []);
+  useEffect(() => { const u = new URL(window.location.href); setDeckId(u.searchParams.get("deckId")); }, []);
   return deckId;
 }
 
@@ -37,13 +34,15 @@ export default function NewCards() {
       });
       const j = await r.json().catch(()=> ({}));
       if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
-      const n = Array.isArray(j?.cards) ? j.cards.length : 0;
+
+      const n = typeof j?.saved === "number"
+        ? j.saved
+        : (Array.isArray(j?.cardIds) ? j.cardIds.length : 0);
+
       setStatus(`Saved ${n} cards. You can start reviewing.`);
     } catch (e:any) {
       setStatus(`Error: ${e?.message ?? "unknown"}`);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   return (
@@ -69,16 +68,11 @@ export default function NewCards() {
             <div className="flex items-center gap-3">
               <label className="text-neutral-700">Count</label>
               <input
-                type="number"
-                min={1}
-                max={50}
-                value={count}
+                type="number" min={1} max={50} value={count}
                 onChange={(e)=>setCount(parseInt(e.target.value || "10"))}
                 className="border rounded-lg p-2 w-24 focus:outline-none focus:ring-2 focus:ring-neutral-800"
               />
-              <button
-                onClick={generate}
-                disabled={busy || !source.trim() || tooLong}
+              <button onClick={generate} disabled={busy || !source.trim() || tooLong}
                 className="rounded-lg bg-neutral-900 text-white px-4 py-2 hover:bg-black disabled:opacity-50">
                 {busy ? "Working…" : "Generate & Save"}
               </button>
