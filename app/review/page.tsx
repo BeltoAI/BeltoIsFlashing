@@ -23,7 +23,11 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [dueCount, setDueCount] = useState<number>(0);
 
-  // Prevent stale response overwrites
+  // history for Next/Previous
+  const [seen, setSeen] = useState<CardDoc[]>([]);
+  const [idx, setIdx] = useState<number>(-1);
+
+  // prevent stale overwrites
   const reqCounter = useRef(0);
 
   const getDeckId = () => {
@@ -37,57 +41,96 @@ export default function ReviewPage() {
       const j = await r.json().catch(() => ({}));
       if (requestId !== reqCounter.current) return;
       if (r.ok && typeof j?.dueNow === "number") setDueCount(j.dueNow);
-    } catch {
-      // non-fatal
+    } catch {}
+  }, []);
+
+  // fetch a brand-new next card (skip seen)
+  const fetchNextFresh = useCallback(async () => {
+    const deckId = getDeckId();
+    if (!deckId) {
+      setError("Missing deckId");
+      setLoading(false);
+      return null;
     }
-  }, []);
+    const requestId = ++reqCounter.current;
+    setLoading(true);
+    setBusy(true);
+    setError(null);
 
-  // IMPORTANT: no `card` in deps (avoids infinite loop)
-  const fetchNextCard = useCallback(
-    async (opts?: { skip?: string[] }) => {
-      const deckId = getDeckId();
-      if (!deckId) {
-        setError("Missing deckId");
+    fetchDueCount(deckId, requestId);
+    try {
+      const params = new URLSearchParams({ deckId });
+      const skips = seen.map((c) => c._id);
+      if (skips.length) params.set("skip", skips.join(","));
+      const r = await fetch(`/api/cards/review?${params.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (requestId !== reqCounter.current) return null;
+      if (!r.ok) throw new Error(j?.error || "Failed to load");
+      const nextCard: CardDoc | null = j.card || null;
+      return nextCard;
+    } catch (e: any) {
+      setError(e?.message || "Load failed");
+      return null;
+    } finally {
+      if (requestId === reqCounter.current) {
         setLoading(false);
-        return;
+        setBusy(false);
       }
+    }
+  }, [fetchDueCount, seen]);
 
-      const requestId = ++reqCounter.current;
-      if (!card) setLoading(true);
-      setBusy(true);
-      setError(null);
-
-      // keep count fresh but don't block UI
-      fetchDueCount(deckId, requestId);
-
-      try {
-        const p = new URLSearchParams({ deckId });
-        if (opts?.skip?.length) p.set("skip", opts.skip.join(","));
-        const r = await fetch(`/api/cards/review?${p.toString()}`, { cache: "no-store" });
-        const j = await r.json();
-        if (requestId !== reqCounter.current) return;
-
-        if (!r.ok) throw new Error(j?.error || "Failed to load");
-        setCard(j.card || null);
-        setView("front");
-      } catch (e: any) {
-        setError(e?.message || "Load failed");
-      } finally {
-        if (requestId === reqCounter.current) {
-          setLoading(false);
-          setBusy(false);
-        }
-      }
-    },
-    [fetchDueCount] // <-- only this; NOT `card`
-  );
-
-  // Run once on mount
+  // initial load
   useEffect(() => {
+    (async () => {
+      const first = await fetchNextFresh();
+      if (first) {
+        setSeen([first]);
+        setIdx(0);
+        setCard(first);
+        setView("front");
+      } else {
+        setSeen([]);
+        setIdx(-1);
+        setCard(null);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    fetchNextCard();
   }, []);
 
+  // navigation
+  const previous = async () => {
+    if (busy) return;
+    if (idx > 0) {
+      setIdx(idx - 1);
+      setCard(seen[idx - 1]);
+      setView("front");
+    }
+  };
+
+  const next = async () => {
+    if (busy) return;
+    // If we already have a later item in history, just move forward
+    if (idx + 1 < seen.length) {
+      setIdx(idx + 1);
+      setCard(seen[idx + 1]);
+      setView("front");
+      return;
+    }
+    // Otherwise fetch a fresh one
+    const fresh = await fetchNextFresh();
+    if (fresh) {
+      setSeen((arr) => [...arr, fresh]);
+      setIdx((i) => i + 1);
+      setCard(fresh);
+      setView("front");
+    } else {
+      // none due; show empty state
+      setCard(null);
+      setIdx(seen.length - 1);
+    }
+  };
+
+  // grading
   async function grade(g: Grade) {
     if (!card?._id || busy) return;
     setBusy(true);
@@ -101,22 +144,11 @@ export default function ReviewPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Grade failed");
 
-      // optimistic decrement then load next
+      // optimistic count decrement, then move forward
       setDueCount((x) => Math.max(0, (x ?? 1) - 1));
-      await fetchNextCard();
+      await next();
     } catch (e: any) {
       setError(e?.message || "Grade failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function skip() {
-    if (!card?._id || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await fetchNextCard({ skip: [card._id] });
     } finally {
       setBusy(false);
     }
@@ -149,15 +181,32 @@ export default function ReviewPage() {
 
       {!card ? (
         <div className="rounded-xl border p-6 text-center text-neutral-600">
-          🎉 No cards due.{" "}
-          <Link href="/new" className="underline">
-            Generate more
-          </Link>
-          .
+          🎉 No cards due. <Link href="/new" className="underline">Generate more</Link>.
         </div>
       ) : (
-        <div key={card._id} className="space-y-3">
-          <div className="rounded-xl border p-5 min-h-32">
+        <div className="space-y-3">
+          {/* nav row */}
+          <div className="flex items-center justify-between">
+            <button
+              onClick={previous}
+              disabled={busy || idx <= 0}
+              className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-50"
+            >
+              ← Previous
+            </button>
+            <div className="text-xs text-neutral-500">
+              {idx >= 0 ? `Card ${idx + 1}${seen.length ? ` of ${seen.length}` : ""}` : null}
+            </div>
+            <button
+              onClick={next}
+              disabled={busy}
+              className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-50"
+            >
+              Next →
+            </button>
+          </div>
+
+          <div key={card._id} className="rounded-xl border p-5 min-h-32">
             {view === "front" ? (
               <>
                 <div className="text-sm text-neutral-500 mb-1">Question</div>
@@ -173,23 +222,13 @@ export default function ReviewPage() {
 
           <div className="flex items-center gap-2 flex-wrap">
             {view === "front" ? (
-              <>
-                <button
-                  disabled={busy}
-                  onClick={() => setView("back")}
-                  className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-50"
-                >
-                  Show answer
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={skip}
-                  className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-50"
-                  title="Skip this card and pull a different one"
-                >
-                  Skip
-                </button>
-              </>
+              <button
+                disabled={busy}
+                onClick={() => setView("back")}
+                className="px-3 py-2 rounded-lg border hover:bg-neutral-50 disabled:opacity-50"
+              >
+                Show answer
+              </button>
             ) : (
               <>
                 <button
