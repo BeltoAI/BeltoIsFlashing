@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
-import { dbConnect } from "../../../../src/lib/db";
+import { dbConnect } from "../../../../../src/lib/db";
 import mongoose from "mongoose";
 
 const MAX_SOURCE_CHARS = Number(process.env.MAX_SOURCE_CHARS ?? 8000);

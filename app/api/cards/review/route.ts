@@ -3,9 +3,9 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import mongoose from "mongoose";
-import { dbConnect } from "../../../src/lib/db";
-import Card from "../../../src/models/Card";
-import { scheduleNext } from "../../../src/lib/srs";
+import { dbConnect } from "../../../../src/lib/db";
+import Card from "../../../../src/models/Card";
+import { scheduleNext } from "../../../../src/lib/srs";
 
 export async function GET(req: NextRequest) {
   try {
