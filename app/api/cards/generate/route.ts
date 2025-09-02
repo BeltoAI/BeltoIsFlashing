@@ -6,104 +6,174 @@ import mongoose from "mongoose";
 import { dbConnect } from "../../../../src/lib/db";
 import Card from "../../../../src/models/Card";
 
-type RawCard = { q?: any; a?: any; question?: any; answer?: any; front?: any; back?: any; prompt?: any; };
-type CleanCard = { q: string; a: string };
+type RawCard = Record<string, unknown>;
+type QA = { q: string; a: string };
 
-function safeParse<T>(s: string): T | null {
-  try { return JSON.parse(s); } catch { return null; }
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
 }
 
-function extractArray(text: string): any[] | null {
-  if (!text) return null;
-  const trimmed = text.trim();
+function stripCodeFences(s: string) {
+  const m = s.match(/```(?:json|javascript)?\s*([\s\S]*?)```/i);
+  return m ? m[1] : s;
+}
 
-  // 1) direct parse
-  let arr = safeParse<any[]>(trimmed);
-  if (Array.isArray(arr)) return arr;
-
-  // 2) bracket slice
-  const first = trimmed.indexOf("[");
-  const last  = trimmed.lastIndexOf("]");
-  if (first >= 0 && last > first) {
-    arr = safeParse<any[]>(trimmed.slice(first, last + 1));
-    if (Array.isArray(arr)) return arr;
+function firstBalancedJSONArray(s: string): string | null {
+  const i = s.indexOf("[");
+  if (i < 0) return null;
+  let depth = 0;
+  for (let j = i; j < s.length; j++) {
+    const ch = s[j];
+    if (ch === "[") depth++;
+    if (ch === "]") {
+      depth--;
+      if (depth === 0) return s.slice(i, j + 1);
+    }
   }
-
-  // 3) normalize quotes + trailing commas
-  const norm = trimmed
-    .replace(/[\u201C\u201D\u2018\u2019]/g, '"')
-    .replace(/,\s*([}\]])/g, "$1");
-  arr = safeParse<any[]>(norm);
-  if (Array.isArray(arr)) return arr;
-
-  // 4) maybe { cards: [...] }
-  const obj = safeParse<any>(norm);
-  if (obj && Array.isArray(obj.cards)) return obj.cards;
-
   return null;
 }
 
-function normalize(items: RawCard[], cap: number): CleanCard[] {
-  const mapped = items.map((it) => {
-    const q = it.q ?? it.question ?? it.prompt ?? it.front ?? "";
-    const a = it.a ?? it.answer ?? it.back ?? "";
-    return { q: String(q || "").trim(), a: String(a || "").trim() };
-  }).filter(c => c.q && c.a);
-  return mapped.slice(0, Math.max(1, cap || mapped.length || 1));
+function tryJSON<T = unknown>(s: string): T | null {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeOne(o: RawCard): QA | null {
+  const q =
+    o.q ?? o.Q ?? o.question ?? o.Question ?? o.front ?? o.prompt ?? o.term;
+  const a =
+    o.a ?? o.A ?? o.answer ?? o.Answer ?? o.back ?? o.definition ?? o.explanation;
+  if (!q || !a) return null;
+  const qq = String(q).trim();
+  const aa = String(a).trim();
+  if (!qq || !aa) return null;
+  return { q: qq, a: aa };
+}
+
+function toQAArray(anything: unknown): QA[] {
+  const arr = Array.isArray(anything) ? anything : [];
+  return arr
+    .map(normalizeOne)
+    .filter((x): x is QA => !!x);
+}
+
+function extractCardsFromText(content: string): QA[] {
+  if (!content || typeof content !== "string") return [];
+
+  // 1) yank code fence if present
+  let s = stripCodeFences(content).trim();
+
+  // 2) if response is a JSON string (e.g. starts/ends with quotes), unquote once
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    const unq = tryJSON<string>(s);
+    if (typeof unq === "string") s = unq.trim();
+  }
+
+  // 3) direct array?
+  if (s.startsWith("[")) {
+    const arr = tryJSON(s);
+    if (arr) return toQAArray(arr);
+  }
+
+  // 4) find first balanced array anywhere
+  const slice = firstBalancedJSONArray(s);
+  if (slice) {
+    const arr = tryJSON(slice);
+    if (arr) return toQAArray(arr);
+  }
+
+  // 5) maybe object with { cards: [...] }
+  const asObj = tryJSON<Record<string, unknown>>(s);
+  if (asObj && Array.isArray((asObj as any).cards)) {
+    return toQAArray((asObj as any).cards);
+  }
+
+  // 6) maybe the object itself is a stringified object containing cards
+  if (typeof asObj === "string") {
+    const nestedObj = tryJSON<Record<string, unknown>>(asObj);
+    if (nestedObj && Array.isArray((nestedObj as any).cards)) {
+      return toQAArray((nestedObj as any).cards);
+    }
+  }
+
+  // 7) last-ditch: parse stringified array
+  const asArray = tryJSON(s);
+  if (Array.isArray(asArray)) return toQAArray(asArray);
+
+  return [];
+}
+
+function buildPrompt(source: string, count: number) {
+  // Keep it *very* explicit. Models love to “help”.
+  return [
+    {
+      role: "system",
+      content:
+        "You are a JSON generator. Output ONLY a compact JSON array of objects with keys 'q' and 'a'. No prose. No code fences. Example: [{\"q\":\"Question\",\"a\":\"Answer\"}]",
+    },
+    {
+      role: "user",
+      content:
+        `Create ${count} short flashcards from the following text/topic. Each item MUST be {"q": "...", "a": "..."}. ` +
+        `Keep them concise, factual, and self-contained.\n\n=== SOURCE START ===\n${source}\n=== SOURCE END ===\n\n` +
+        `OUTPUT: A raw JSON array, nothing else.`,
+    },
+  ];
 }
 
 export async function POST(req: NextRequest) {
   try {
     await dbConnect();
     const body = await req.json().catch(() => ({}));
-    const deckId: string | undefined = body.deckId;
-    const source: string = body.source || "";
-    const count: number = Math.min(20, Math.max(1, Number(body.count || 5)));
+    const deckId = String(body.deckId || "").trim();
+    const source = String(body.source || "").trim();
+    const count = clamp(Number(body.count || 5), 1, 50);
 
-    if (!deckId) {
+    if (!deckId || !mongoose.isValidObjectId(deckId)) {
       return NextResponse.json({ error: "MISSING_DECK_ID" }, { status: 400 });
     }
-    if (!source.trim()) {
+    if (!source) {
       return NextResponse.json({ error: "MISSING_SOURCE" }, { status: 400 });
     }
 
-    // Call your local LLM proxy directly
+    // Call your local OpenAI-compatible proxy
     const r = await fetch(process.env.BELTO_API_URL!, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model: process.env.BELTO_API_MODEL || "local",
-        messages: [
-          {
-            role: "system",
-            content:
-              `Output strictly a JSON array of ${count} objects like ` +
-              `[{"q":"...","a":"..."}]. No prose, no code fences, no preface, no trailing text.`
-          },
-          { role: "user", content: source }
-        ],
-        max_tokens: 512,
-        temperature: 0.1
+        messages: buildPrompt(source, count),
+        temperature: 0.2,
+        max_tokens: 800,
+        // Some proxies accept this; harmless if ignored.
+        // response_format: { type: "json_object" },
       }),
     });
 
-    const j = await r.json().catch(() => ({} as any));
-    const content: string = j?.choices?.[0]?.message?.content || "";
+    const jr = await r.json().catch(() => ({} as any));
+    const content: string =
+      jr?.choices?.[0]?.message?.content ??
+      jr?.choices?.[0]?.message ??
+      jr?.content ??
+      "";
 
-    const raw = extractArray(content);
-    if (!Array.isArray(raw)) {
+    const cards = extractCardsFromText(String(content || "")).slice(0, count);
+
+    if (!cards.length) {
+      const sample =
+        typeof content === "string"
+          ? content.slice(0, 600)
+          : JSON.stringify(jr).slice(0, 600);
       return NextResponse.json(
-        { error: "AI_BAD_JSON", sample: content?.slice(0, 500) },
+        { error: "AI_BAD_JSON", sample },
         { status: 400 }
       );
     }
 
-    const cards = normalize(raw as RawCard[], count);
-    if (!cards.length) {
-      return NextResponse.json({ error: "AI_ZERO" }, { status: 400 });
-    }
-
-    // Save using native collection for deterministic insertedCount
+    // Prepare docs
     const deckObjectId = new mongoose.Types.ObjectId(deckId);
     const now = new Date();
     const docs = cards.map((c) => ({
@@ -115,10 +185,19 @@ export async function POST(req: NextRequest) {
       due: now,
     }));
 
+    // Use native driver for deterministic counts
     const col = mongoose.connection.db.collection("cards");
     const result = await col.insertMany(docs, { ordered: false });
     const insertedIds = (result as any)?.insertedIds ?? {};
-    const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
+    const insertedCount =
+      (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
+
+    if (!insertedCount) {
+      return NextResponse.json(
+        { error: "SAVE_ZERO", attempted: docs.length, reason: "insertedCount=0" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       ok: true,
