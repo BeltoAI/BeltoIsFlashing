@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, startTransition } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 type Grade = "again" | "hard" | "good" | "easy";
@@ -23,26 +23,26 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [dueCount, setDueCount] = useState<number>(0);
 
-  // prevent stale response flicker
+  // Prevent stale response overwrites
   const reqCounter = useRef(0);
 
   const getDeckId = () => {
     if (typeof window === "undefined") return null;
-    const u = new URL(window.location.href);
-    return u.searchParams.get("deckId");
+    return new URL(window.location.href).searchParams.get("deckId");
   };
 
   const fetchDueCount = useCallback(async (deckId: string, requestId: number) => {
     try {
       const r = await fetch(`/api/cards/count?deckId=${deckId}`, { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
-      if (requestId !== reqCounter.current) return; // ignore stale
+      if (requestId !== reqCounter.current) return;
       if (r.ok && typeof j?.dueNow === "number") setDueCount(j.dueNow);
     } catch {
       // non-fatal
     }
   }, []);
 
+  // IMPORTANT: no `card` in deps (avoids infinite loop)
   const fetchNextCard = useCallback(
     async (opts?: { skip?: string[] }) => {
       const deckId = getDeckId();
@@ -53,11 +53,11 @@ export default function ReviewPage() {
       }
 
       const requestId = ++reqCounter.current;
+      if (!card) setLoading(true);
       setBusy(true);
-      if (card === null) setLoading(true); // initial load
       setError(null);
 
-      // keep count reasonably fresh
+      // keep count fresh but don't block UI
       fetchDueCount(deckId, requestId);
 
       try {
@@ -65,15 +65,11 @@ export default function ReviewPage() {
         if (opts?.skip?.length) p.set("skip", opts.skip.join(","));
         const r = await fetch(`/api/cards/review?${p.toString()}`, { cache: "no-store" });
         const j = await r.json();
-        if (requestId !== reqCounter.current) return; // ignore stale
+        if (requestId !== reqCounter.current) return;
 
         if (!r.ok) throw new Error(j?.error || "Failed to load");
-
-        // Show front first whenever we swap to a new card
-        startTransition(() => {
-          setCard(j.card || null);
-          setView("front");
-        });
+        setCard(j.card || null);
+        setView("front");
       } catch (e: any) {
         setError(e?.message || "Load failed");
       } finally {
@@ -83,13 +79,14 @@ export default function ReviewPage() {
         }
       }
     },
-    [card, fetchDueCount]
+    [fetchDueCount] // <-- only this; NOT `card`
   );
 
+  // Run once on mount
   useEffect(() => {
-    // safe to depend on the stable callback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     fetchNextCard();
-  }, [fetchNextCard]);
+  }, []);
 
   async function grade(g: Grade) {
     if (!card?._id || busy) return;
@@ -104,10 +101,8 @@ export default function ReviewPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || "Grade failed");
 
-      // optimistic decrement
+      // optimistic decrement then load next
       setDueCount((x) => Math.max(0, (x ?? 1) - 1));
-
-      // fetch next card; no skip needed after grading
       await fetchNextCard();
     } catch (e: any) {
       setError(e?.message || "Grade failed");
@@ -162,24 +157,18 @@ export default function ReviewPage() {
         </div>
       ) : (
         <div key={card._id} className="space-y-3">
-          <div className="rounded-xl border p-5">
-            <div
-              className={`transition-opacity duration-200 ${
-                view === "front" ? "opacity-100" : "opacity-0 pointer-events-none absolute"
-              }`}
-            >
-              <div className="text-sm text-neutral-500 mb-1">Question</div>
-              <div className="text-lg">{card.q}</div>
-            </div>
-
-            <div
-              className={`transition-opacity duration-200 ${
-                view === "back" ? "opacity-100" : "opacity-0 pointer-events-none absolute"
-              }`}
-            >
-              <div className="text-sm text-neutral-500 mb-1">Answer</div>
-              <div className="text-lg">{card.a}</div>
-            </div>
+          <div className="rounded-xl border p-5 min-h-32">
+            {view === "front" ? (
+              <>
+                <div className="text-sm text-neutral-500 mb-1">Question</div>
+                <div className="text-lg">{card.q}</div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm text-neutral-500 mb-1">Answer</div>
+                <div className="text-lg">{card.a}</div>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
