@@ -1,22 +1,13 @@
-import { Schema, model, models, Types } from "mongoose";
+import mongoose, { Schema, models, model } from "mongoose";
 
 const CardSchema = new Schema({
-  deckId: { type: Schema.Types.ObjectId, ref: "Deck", required: true, index: true },
-  question: { type: String, required: true },
-  answer: { type: String, required: true },
-  box: { type: Number, default: 1 },
-  nextReview: { type: Date, default: () => new Date() },
-  createdAt: { type: Date, default: () => new Date() },
-});
-
-export type CardDoc = {
-  _id: Types.ObjectId;
-  deckId: Types.ObjectId;
-  question: string;
-  answer: string;
-  box: number;
-  nextReview: Date;
-  createdAt: Date;
-};
+  deckId: { type: Schema.Types.ObjectId, ref: "Deck", index: true, required: true },
+  q:      { type: String, required: true },
+  a:      { type: String, required: true },
+  ease:   { type: Number, default: 2.5 },
+  interval:{ type: Number, default: 0 },
+  due:    { type: Date,   default: () => new Date() },
+  createdAt:{ type: Date, default: () => new Date() },
+}, { versionKey: false });
 
 export default models.Card || model("Card", CardSchema);
