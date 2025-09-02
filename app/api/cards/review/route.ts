@@ -7,22 +7,33 @@ import { dbConnect } from "../../../../src/lib/db";
 import Card from "../../../../src/models/Card";
 import { scheduleNext } from "../../../../src/lib/srs";
 
+// Only return cards that are actually due now; optionally skip a specific id
 export async function GET(req: NextRequest) {
   try {
     await dbConnect();
     const { searchParams } = new URL(req.url);
     const deckId = searchParams.get("deckId");
-    if (!deckId) return NextResponse.json({ error: "MISSING_DECK_ID" }, { status: 400 });
+    const skip = searchParams.get("skip");
 
-    const now = new Date();
-    const card = await Card.findOne({ deckId, due: { $lte: now } })
-      .sort({ due: 1 })
-      .lean();
+    if (!deckId) {
+      return NextResponse.json({ error: "MISSING_DECK_ID" }, { status: 400 });
+    }
 
-    if (!card) return NextResponse.json({ noneDue: true });
-    return NextResponse.json({ card });
+    const query: any = {
+      deckId: new mongoose.Types.ObjectId(deckId),
+      due: { $lte: new Date() },
+    };
+    if (skip && mongoose.isValidObjectId(skip)) {
+      query._id = { $ne: new mongoose.Types.ObjectId(skip) };
+    }
+
+    const card = await Card.findOne(query).sort({ due: 1, _id: 1 }).lean();
+    return NextResponse.json({ card: card ? { ...card, _id: String(card._id) } : null });
   } catch (e: any) {
-    return NextResponse.json({ error: "REVIEW_GET_FAILED", detail: e?.message || String(e) }, { status: 500 });
+    return NextResponse.json(
+      { error: "REVIEW_LOAD_FAILED", detail: e?.message || String(e) },
+      { status: 500 }
+    );
   }
 }
 
@@ -49,7 +60,7 @@ export async function POST(req: NextRequest) {
     const r = await Card.updateOne(
       { _id: new mongoose.Types.ObjectId(cardId) },
       { $set: { ease, interval, due } },
-      { runValidators: false } // do NOT validate missing q/a on updates
+      { runValidators: false } // don't revalidate missing q/a on update
     );
 
     return NextResponse.json({ ok: true, modified: r.modifiedCount, nextDue: due });
