@@ -121,7 +121,9 @@ export async function POST(req: NextRequest) {
   try {
     const col = mongoose.connection.db.collection("cards"); // model name 'Card' => collection 'cards'
     const result = await col.insertMany(docs, { ordered: false });
-    const saved = (result as any)?.insertedCount ?? Object.keys((result as any)?.insertedIds || {}).length || 0;
+    const insertedIds = (result as any)?.insertedIds ?? {};
+const insertedCount = (result as any)?.insertedCount ?? Object.keys(insertedIds).length;
+const saved = insertedCount || 0;
 
     if (saved === 0) {
       return NextResponse.json(
@@ -139,7 +141,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (e: any) {
     const msg = e?.message || String(e);
-    const partial = (e?.result?.result?.nInserted) ?? (e?.result?.insertedCount);
+    const partial = ((e as any)?.result?.result?.nInserted ?? (e as any)?.result?.insertedCount ?? 0);
     return NextResponse.json(
       { error: "SAVE_FAILED", attempted: docs.length, inserted: partial ?? 0, detail: msg },
       { status: 500 }
