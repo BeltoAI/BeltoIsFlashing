@@ -2,8 +2,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
-import { dbConnect } from "../../../src/lib/db";
-import Card from "../../../src/models/Card";
+import { dbConnect } from "@/src/lib/db";
+import Card from "@/src/models/Card";
 
 type InputCard = { q: string; a: string };
 
