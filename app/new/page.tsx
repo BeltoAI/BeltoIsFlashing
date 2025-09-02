@@ -26,39 +26,20 @@ export default function NewCards() {
   async function generate() {
     if (!deckId) { alert("Missing deckId"); return; }
     if (!source.trim()) { setStatus("Please paste some text."); return; }
-    if (tooLong) { setStatus(`Text too long: ${source.length} > ${MAX_CHARS} characters. Split it and try again.`); return; }
+    if (tooLong) { setStatus(`Text too long: ${source.length} > ${MAX_CHARS}. Split it.`); return; }
 
-    setBusy(true); setStatus("Asking AI to generate cards...");
-    const prompt = `From the text below, generate ${count} flashcards as compact Q/A JSON array with keys "q" and "a". Keep answers concise.\nTEXT:\n${source}`;
+    setBusy(true); setStatus("Generating and saving cards...");
     try {
-      const r = await fetch("/api/ai", {
+      const r = await fetch("/api/cards/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] })
+        body: JSON.stringify({ deckId, source, count }),
       });
-      if (!r.ok) throw new Error(`AI HTTP ${r.status}`);
-      const j = await r.json();
-      const content = j.content ?? "";
-      let cards: Array<{ q: string; a: string }>;
-
-      try {
-        cards = JSON.parse(content);
-        if (!Array.isArray(cards)) throw new Error("Not array");
-      } catch {
-        const m = content.match(/```json([\s\S]*?)```/i);
-        if (!m) throw new Error("AI did not return JSON");
-        cards = JSON.parse(m[1]);
-      }
-
-      setStatus("Saving cards...");
-      const save = await fetch("/api/cards", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ deckId, cards })
-      });
-      if (!save.ok) throw new Error(`Save failed (HTTP ${save.status})`);
-      setStatus(`Saved ${cards.length} cards. You can start reviewing soon.`);
-    } catch (e: any) {
+      const j = await r.json().catch(()=> ({}));
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      const n = Array.isArray(j?.cards) ? j.cards.length : 0;
+      setStatus(`Saved ${n} cards. You can start reviewing.`);
+    } catch (e:any) {
       setStatus(`Error: ${e?.message ?? "unknown"}`);
     } finally {
       setBusy(false);
@@ -70,7 +51,7 @@ export default function NewCards() {
       <div className="rounded-2xl border bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-semibold">Generate Cards</h1>
         <p className="text-sm text-neutral-600 mt-1">
-          Paste source text (max {MAX_CHARS.toLocaleString()} chars), choose how many cards, then let AI generate concise Q/A pairs.
+          Paste source text (max {MAX_CHARS.toLocaleString()} chars), pick a count, then generate concise Q/A pairs.
         </p>
 
         <div className="mt-5 space-y-3">
@@ -106,8 +87,7 @@ export default function NewCards() {
 
           {tooLong && (
             <div className="rounded-lg border bg-red-50 p-3 text-sm text-red-800">
-              Your text is {source.length.toLocaleString()} chars. The limit is {MAX_CHARS.toLocaleString()}.
-              Split it into smaller chunks and try again.
+              Your text is {source.length.toLocaleString()} chars. Limit is {MAX_CHARS.toLocaleString()}. Split it into smaller chunks.
             </div>
           )}
           {status && !tooLong && (
